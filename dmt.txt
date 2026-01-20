@@ -1,0 +1,47 @@
+MS https://betaapi.instantmudra.net/logs/transactions
+https://betaapi.instantmudra.net/services/dmt/getCustomerDetail
+{
+    "status": "success",
+    "msg": "remitter found successfully",
+    "id": 2029480,
+    "name": "Nikhil Khot",
+    "mobileno": "9890608433",
+    "accno": ""
+}
+https://betaapi.instantmudra.net/services/dmt/getAccountDetail
+/betaapi.instantmudra.net/services/dmt/getBalance
+https://betaapi.instantmudra.net/services/dmt/listBeneficiary
+betaapi.instantmudra.net/data/bank_master
+https://betaapi.instantmudra.net/services/dmt/transferNew
+https://betaapi.instantmudra.net/services/dmt/transferNew otp payload
+
+
+https://betaapi.instantmudra.net/services/dmt/vendor/sendRegOtp
+
+https://betaapi.instantmudra.net/services/dmt/vendor/verifyOTPAndAdhar
+
+
+https://betaapi.instantmudra.net/services/dmt/vendor/performEKYC
+
+
+
+https://betaapi.instantmudra.net/services/dmt/getBalance
+Request Method
+POST
+
+
+----------------------------------------------------------------------------------------------------------------------------
+
+after kyc
+https://betaapi.instantmudra.net/services/dmt/getBalance
+https://betaapi.instantmudra.net/services/dmt/getAccountDetail
+
+https://betaapi.instantmudra.net/services/dmt/getCustomerDetail
+
+
+https://betaapi.instantmudra.net/services/dmt/getBalance
+
+https://betaapi.instantmudra.net/services/dmt/listBeneficiary
+
+
+https://betaapi.instantmudra.net/services/dmt/transferNew
