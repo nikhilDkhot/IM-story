@@ -45,3 +45,14 @@ https://betaapi.instantmudra.net/services/dmt/listBeneficiary
 
 
 https://betaapi.instantmudra.net/services/dmt/transferNew
+
+Dhan Nirankar Ji, Please add the complaints in this Excel sheet. We have added one sample record for your reference. Note: Address change/update is allowed only from Bhavan to Bhavan and from individual to individual.
+
+धन निरंकार जी,
+कृपया इस Excel शीट में शिकायतें add kijiye. आपके संदर्भ के लिए एक सैंपल रिकॉर्ड पहले से add kiya गया है।
+
+नोट: पता change/अपडेट केवल भवान से भवान और व्यक्तिगत से व्यक्तिगत ही मान्य है।
+
+
+
+
