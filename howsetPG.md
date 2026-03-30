@@ -26,4 +26,10 @@ In **APIHub**, whenever a transaction is initiated through the payment gateway, 
 
 These tables will be used to track and manage transaction-related data.
 ---
+Today I learned about PG2. Since the PG server was down, some transactions did not reach APIHub to PG2.
+
+First, the transaction comes into the fundrequest table, where we get the tx_ref, which is coming from the API. From there, the transaction moves to the pgrequest table, where a link is generated. An interesting point is that the fundrequest ID is stored in the pgrequest table as pg_request_id.
+
+Next, when the callback is received, the callback data is inserted into the pgrequest table. After that, the status in the fundrequest table is changed to completed, and the notified status is updated from open to sent. Additionally, an entry is created in the log_webhook table using the tx_ref.
+
 
