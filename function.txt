@@ -1,0 +1,447 @@
+checkPayoutLimit: function (dataParams, callback) {
+        if (['MUDRARASHI', 'PAYOUT'].indexOf(dataParams.product) < 0) {
+            return callback(true);
+        }
+        var where = {
+            "blocked": "false",
+            "param1": dataParams.bank_account_no,
+            "param2": dataParams.bank_id
+        };
+        // DATE_FORMAT(created_on, "%Y-%m")='2023-06'
+        // where[`product IN ('MUDRARASHI', 'PAYOUT') AND date(created_on)='${moment().format("YYYY-MM-DD")}'`] = "RAW";
+        where[`product IN ('MUDRARASHI', 'PAYOUT') AND DATE_FORMAT(created_on, "%Y-%m")='${moment().format("YYYY-MM")
+            }'`] = "RAW";
+        dblog_selectQ("log_limit_payouts", "sum(amount) as amount", where, {}, function (txData) {
+            if (!txData)
+                txData = [{
+                    "amount": 0
+                }];
+            dbRead_selectQ("accountids_settings", "*", {
+                "guid": dataParams.guid,
+                "blocked": "false"
+            }, {}, function (accountData, errorMsg) {
+                if (!accountData) {
+                    return callback(false, "Account settings Error");
+                }
+                if ((txData[0]['amount'] + dataParams.txamount) > accountData[0]['maxlimit_payouts_monthly']) {
+                    return callback(false, "Beneficiary Account Limit Exceeded");
+                }
+                callback(true);
+            });
+        }, "GROUP BY concat(param1,param2)");
+    }
+
+walletlock_check: function (guid,callback) {
+        var xHash = guid;
+        var d1 = new Date();
+        if(LOCK_WALLET_QUEUE[xHash]!=null) {
+            if (d1 - LOCK_WALLET_QUEUE[xHash] > WALLET_LOCK_PERIOD) {
+                delete LOCK_WALLET_QUEUE[xHash];
+                return callback(false);
+            } else {
+                return callback(true);
+            }
+        }
+        var options = {
+            method: 'GET', 
+            url: CONFIG.CLUSTER_COMMUNICATOR+'lock/walletlock/'+xHash
+        };
+        axios.request(options).then(function (response) {
+          if(response.data=="found") callback(true);
+          else callback(false);
+        }).catch(function (error) {
+          //console.error(error);
+          callback(false);
+        });
+    }
+
+isProductTypeSettlement: function(product, subproduct, callback) {
+    dbRead_selectQ("products", "*", {
+        "prod_code": product,
+    }, {}, function (productData, errMsg) {
+        console.log('productData - ', productData)
+        if (!productData || productData[0] == null) {
+            callback(false, false);
+            return;
+        }
+        if (productData[0]['is_settlement'] == "true") {
+            callback(true, productData[0], false);
+            return;
+        } else {
+            //CHECK SUBPRODUCT
+            if (subproduct) {
+                dbRead_selectQ("sys_subproducts", "*", {
+                    "product": product,
+                    "subproduct": subproduct,
+                }, {}, function (subproductData, errMsg) {
+                    console.log('subproductData 3- ', subproductData, errMsg)
+                    if (!subproductData || subproductData[0] == null) {
+                        callback(false, productData[0]);
+                        return;
+                    } else {
+                        if (subproductData[0]['is_settlement'] == "true") {
+                            callback(true, productData[0]);
+                            return;
+                        } else {
+                            callback(false, productData[0]);
+                            return;
+                        }
+                    }
+                });
+            } else {
+                callback(false, productData[0]);
+            }
+        }
+    });
+}
+
+getWallet: function(accID, callback) {
+    db_selectQ("wallet", "*", {
+        "blocked": "false",
+        "accountids_id": accID
+    }, {}, function (walletData, err) {
+        // console.log('walletData, err: ', walletData, err);
+        if (!walletData) {
+            db_selectQ("wallet", "*", {
+                "blocked": "false",
+                "accountids_id": accID
+            }, {}, function (walletData2, err1) {
+                if (!walletData2) {
+                    dblog_insertQ1("log1_temp", {
+                        "guid": "",
+                        "product": "wallet.js-getWallet2",
+                        "dataset1": accID || "",
+                        "tx_ref": "",
+                        "txdata": JSON.stringify({ accID, err, err1 }),
+                        "err_msg": "",
+                        "created_by": "wallet.js",
+                        "created_on": moment().format("YYYY-MM-DD HH:mm:ss")
+                    }, a => { });
+                    callback(false);
+                } else {
+                    callback(walletData2[0]);
+                    return;
+                }
+            });
+            return;
+        } else {
+            callback(walletData[0]);
+            return;
+        }
+    });
+}
+
+findSchemeAuto: function (productData, dataParams, callback) {
+    ACCOUNT.getAdharPanLinkStatus(dataParams.guid, function (aadhaar_pan_link_status) {
+        if (!aadhaar_pan_link_status) {
+            callback(false, "Error in finding the account for scheme");
+            return;
+        }
+        var tdsValue = 2;
+        if (aadhaar_pan_link_status == "false") tdsValue = 20;
+        console.log('tdsValue 2 - ', tdsValue)
+        if (productData.scheme_engine == "scheme2" || (dataParams.product == "QRPAY" && dataParams.subproduct == "QRPAY3") /*|| (dataParams.product == "DMT" && dataParams.subproduct == "ekyc")*/) {
+            SCHEME.findScheme2(dataParams.accounts_id, dataParams.scheme_product, dataParams.subproduct, dataParams.wallet_type, function (schemeData, errorMessage) {
+                if (!schemeData) {
+                    return callback(false, "Scheme Not Found");
+                } else {
+                    schemeData.tds = tdsValue;
+                    return callback(schemeData, errorMessage);
+                }
+            });
+        } else {
+            SCHEME.findScheme(dataParams.accounts_id, dataParams.scheme_product, dataParams.wallet_type, function (schemeData) {
+                schemeData.tds = tdsValue;
+                callback(schemeData);
+            });
+        }
+    });
+}
+
+findScheme2: function(accID, productCode, subproductCode, walletType, callback) {
+    var whereClause = {
+        "schemes_allocated.accountids_id": accID,//+"X"
+        "schemes.scheme_product": productCode,
+        "schemes.scheme_subproduct": subproductCode,
+        "products.blocked": "false",
+        "schemes.blocked": "false",
+        "schemes_allocated.blocked": "false",
+        "schemes.id=schemes_allocated.scheme_id": "RAW",
+        "schemes.scheme_product=products.prod_code": "RAW"
+    };
+    if (walletType != null) {
+        whereClause["FIND_IN_SET('" + walletType + "', schemes.wallet_type)"] = "RAW";
+    }
+    dbRead_selectQ("schemes,schemes_allocated,products", "schemes.*,products.*,schemes.id as schemeID,products.id as productID", whereClause, {}, function (schemeData) {
+        if (!schemeData) {
+            SCHEME.getFallbackSchemeMap(accID, productCode, walletType, callback);
+            return;
+        }
+        schemeData = schemeData[0];
+        var schemeDefination = {};
+        try {
+            schemeDefination = JSON.parse(schemeData.scheme_defination);
+            if (!schemeDefination) {
+                return callback(false, "Scheme Is Corrupted, please check with admin");
+            }
+        } catch (e) {
+            return callback(false, "Scheme Is Corrupted or not defined, please check with admin");
+        }
+        schemeData.scheme_defination = schemeDefination;
+        callback(schemeData);
+    });
+}
+
+findScheme: function(accID, productCode, walletType, callback) {
+    var whereClause = {
+        "schemes_allocated.accountids_id": accID,//+"X"
+        "schemes.scheme_product": productCode,
+        "products.blocked": "false",
+        "schemes.blocked": "false",
+        "schemes_allocated.blocked": "false",
+        "schemes.id=schemes_allocated.scheme_id": "RAW",
+        "schemes.scheme_product=products.prod_code": "RAW"
+    };
+    if (walletType != null) {
+        whereClause["FIND_IN_SET('" + walletType + "', schemes.wallet_type)"] = "RAW";
+    }
+    dbRead_selectQ("schemes,schemes_allocated,products", "schemes.*,products.*,schemes.id as schemeID,products.id as productID", whereClause, {}, function (schemeData) {
+        if (!schemeData) {
+            SCHEME.getFallbackSchemeMap(accID, productCode, walletType, callback);
+            return;
+        }
+        schemeData = schemeData[0];
+        var schemeDefination = {};
+        try {
+            schemeDefination = JSON.parse(schemeData.scheme_defination);
+            if (!schemeDefination) {
+                return callback(false, "Scheme Is Corrupted, please check with admin");
+            }
+        } catch (e) {
+            return callback(false, "Scheme Is Corrupted or not defined, please check with admin");
+        }
+        schemeData.scheme_defination = schemeDefination;
+        callback(schemeData);
+    });
+}
+
+getFallbackSchemeMap: function(accID, productCode, walletType, callback) {
+    if (productCode == null) {
+        return callback(false, "Scheme Not Found");
+    }
+    switch (productCode.toUpperCase()) {
+        case "PG":
+            break;
+    }
+    return callback(false, "Scheme Not Found");
+}
+
+fetchSchemeSlab: function(schemeData, txamount, operatorCode, callback) {
+    var schemeDefination = schemeData.scheme_defination;
+    var slabArr = [];
+    if (schemeData['operator_source'] != null && schemeData['operator_source'].length > 0) {
+        if (schemeDefination.slabs[operatorCode] != null) {
+            slabArr = schemeDefination.slabs[operatorCode];
+        } else if (schemeDefination.slabs[operatorCode.toLowerCase()] != null) {
+            slabArr = schemeDefination.slabs[operatorCode.toLowerCase()];
+        } else {
+            //###
+            console.log("Operator Not Supported", { "operator_source": schemeData['operator_source'] }, { "operatorCode": operatorCode }, { "schemeDefination": schemeDefination }, { "schemeData": schemeData });
+            //###
+            return callback(false, "Operator Not Supported", { "operator": operatorCode });
+        }
+    } else {
+        slabArr = schemeDefination.slabs;
+    }
+    var txAmount = parseFloat(txamount);
+    if (schemeData['cluster_mode'] == "true") {
+        var clusterAmount = parseFloat(schemeData['cluster_amount']);
+        if (clusterAmount < txAmount) {
+            return callback(false, "Cluster Mode Is Not Supported Yet");
+        } else {
+            var txSlab = this.indentifySlab(slabArr, txamount);
+            if (!txSlab) {
+                return callback(false, "TX Slab could not be identified");
+            }
+            callback(txSlab);
+        }
+    } else {
+        var txSlab = this.indentifySlab(slabArr, txamount);
+        if (!txSlab) {
+            return callback(false, "TX Slab could not be identified");
+        }
+        callback(txSlab);
+    }
+}
+
+indentifySlab: function(slabArr, txAmount) {
+	var txSlab = false;
+	var txAmount = parseInt(txAmount);
+	var slabKeys = Object.keys(slabArr);
+	var keyLength = slabKeys.length;
+	for (i = 0; i < keyLength; i++) {
+		slab = slabArr[slabKeys[i]];
+		slab.slab_start = parseInt(slab.slab_start);
+		slab.slab_end = parseInt(slab.slab_end);
+		if (txAmount >= slab.slab_start && txAmount <= slab.slab_end) {
+			txSlab = slab;
+		}
+	}
+	return txSlab;
+}
+
+generateTxLogRecord: function (dataParams, callback) {
+    if (dataParams.narration == null) {
+        var narration = this.getNarration(dataParams);
+    } else {
+        var narration = dataParams.narration;
+    }
+    var schemeCode = "";
+    if (dataParams.schemeData != null && dataParams.schemeData.scheme_code != null) {
+        schemeCode = dataParams.schemeData.scheme_code;
+    }
+    var customerCode = "";
+    if (dataParams.customer_code != null && dataParams.customer_code.length > 0) {
+        customerCode = dataParams.customer_code;
+    } else if (dataParams.customer_mobile != null && dataParams.customer_mobile.length > 0) {
+        customerCode = dataParams.customer_mobile;
+    }
+    ACCOUNT.getNetwork(dataParams.accounts_id, function (netwrokData) {
+        const networkEntry = Object.entries(netwrokData).find(([key, value]) => value.guid == dataParams.guid);
+        ACCOUNT.getParentParams(netwrokData, networkEntry, function (parentParams) {
+            if (dataParams.sales_code && dataParams?.sales_code?.length) {
+                TRANSACTION.getSalesInfo(dataParams.sales_code, function (salesInfo) {
+                    dataParams = _.extend(dataParams, salesInfo);
+                    callback({
+                        "txid": TRANSACTION.generateTransactionID(dataParams),
+                        "guid": dataParams.guid,
+                        "guid_role": (networkEntry && networkEntry[1]?.role_name) || "",
+                        "accounts_id": dataParams.accounts_id,
+                        "account_no": dataParams.account_no,
+                        "account_outlet_name": (dataParams.account_outlet_name != null) ? dataParams.account_outlet_name : "",
+                        "account_mobileno": (dataParams.account_mobileno != null) ? dataParams.account_mobileno : "",
+                        "sales_code": dataParams.sales_code,
+                        "customer_code": customerCode,
+                        "product": (dataParams.product != null) ? dataParams.product : dataParams.scheme_product,
+                        "subproduct": (dataParams.subproduct != null) ? dataParams.subproduct : "",
+                        "tx_method": (dataParams.tx_method != null) ? dataParams.tx_method : "", //IMPS/NEFT/RTGS/PG/SC/CASH
+                        "tx_mode": (dataParams.tx_mode != null) ? dataParams.tx_mode : "forward",
+                        "operator": (dataParams.operator != null) ? dataParams.operator : "",
+                        "vendor": (dataParams.vendor != null) ? dataParams.vendor : "",
+                        "cluster_mode": (dataParams.cluster_mode != null) ? dataParams.cluster_mode : "false",
+                        "cluster_code": (dataParams.cluster_code != null) ? dataParams.cluster_code : "",
+                        "scheme": schemeCode,
+                        "uri_path": dataParams.uri_path,
+                        "tx_data": JSON.stringify(dataParams),
+                        "amount": dataParams.txamount,
+                        "baseAmount": (dataParams.baseAmount != null ? dataParams.baseAmount : dataParams.txamount),
+                        "narration": narration,
+                        "remarks": ((dataParams.remarks != null) ? dataParams.remarks :
+                            (dataParams.product, dataParams.subproduct, dataParams)),
+                        "failure_remarks": ((dataParams.failure_remarks != null) ? dataParams.failure_remarks : ""),
+                        "wallet_type": dataParams.wallet_type,
+                        "status": (dataParams.status != null) ? dataParams.status : "pending",
+                        "ref_no": (dataParams.ref_no != null) ? dataParams.ref_no : "",
+                        "tx_ref": (dataParams.tx_ref != null) ? dataParams.tx_ref : "",
+                        "other_info_1": (dataParams.other_info_1 != null) ? dataParams.other_info_1 : "",
+                        "tx_start": (dataParams.tx_start != null) ? dataParams.tx_start : moment().format("Y-M-D HH:mm:ss"),
+                        "tx_end": (dataParams.tx_end != null) ? dataParams.tx_end : "",
+                        "timestamp": (dataParams.timestamp != null) ? dataParams.timestamp : moment().format("Y-M-D HH:mm:ss"),
+                        "user_role": (dataParams.user_role != null) ? dataParams.user_role : "",
+                        "guid_sd": (netwrokData.superdistributor != undefined && netwrokData.superdistributor != null) ? netwrokData.superdistributor.guid : "",
+                        "guid_pt": (netwrokData.partner != undefined && netwrokData.partner != null) ? netwrokData.partner.guid : "",
+                        "guid_dt": (netwrokData.distributor != undefined && netwrokData.distributor != null) ? netwrokData.distributor.guid : "",
+                        "geolocation": dataParams.geolocation,
+                        "clientip": dataParams.clientip,
+                        "created_by": dataParams.userid,
+                        "medium": dataParams.medium,
+                        "site": dataParams.site,
+                        "host": dataParams.host,
+                        sales_id: dataParams.sales_id || "",
+                        sales_col_1: dataParams.sales_col_1 || "",
+                        sales_col_2: dataParams.sales_col_2 || "",
+                        sales_col_3: dataParams.sales_col_3 || "",
+                        sales_col_4: dataParams.sales_col_4 || "",
+                        sales_col_5: dataParams.sales_col_5 || "",
+                        sales_col_6: dataParams.sales_col_6 || "",
+                        sales_col_7: dataParams.sales_col_7 || "",
+                        sales_col_8: dataParams.sales_col_8 || "",
+                        ...parentParams,
+                        plugin_ref: dataParams.plugin_ref,
+                        other_info_5: dataParams.other_info_5
+                    });
+                });
+            } else {
+                db_selectQ("accountids", "sales", {
+                    guid: dataParams.guid
+                }, {}, function (salesData) {
+                    if (!salesData) salesData = [{
+                        "sales": ""
+                    }];
+                    dataParams.sales_code = salesData[0]['sales'];
+                    TRANSACTION.getSalesInfo(dataParams.sales_code, function (salesInfo) {
+                        dataParams = _.extend(dataParams, salesInfo);
+                        callback({
+                            "txid": TRANSACTION.generateTransactionID(dataParams),
+                            "guid": dataParams.guid,
+                            "guid_role": (networkEntry && networkEntry[1]?.role_name) || "",
+                            "accounts_id": dataParams.accounts_id,
+                            "account_no": dataParams.account_no,
+                            "account_outlet_name": (dataParams.account_outlet_name != null) ? dataParams.account_outlet_name : "",
+                            "account_mobileno": (dataParams.account_mobileno != null) ? dataParams.account_mobileno : "",
+                            "sales_code": dataParams.sales_code,
+                            "customer_code": customerCode,
+                            "product": (dataParams.product != null) ? dataParams.product : dataParams.scheme_product,
+                            "subproduct": (dataParams.subproduct != null) ? dataParams.subproduct : "",
+                            "tx_method": (dataParams.tx_method != null) ? dataParams.tx_method : "", //IMPS/NEFT/RTGS/PG/SC/CASH
+                            "tx_mode": (dataParams.tx_mode != null) ? dataParams.tx_mode : "forward",
+                            "operator": (dataParams.operator != null) ? dataParams.operator : "",
+                            "vendor": (dataParams.vendor != null) ? dataParams.vendor : "",
+                            "cluster_mode": (dataParams.cluster_mode != null) ? dataParams.cluster_mode : "false",
+                            "cluster_code": (dataParams.cluster_code != null) ? dataParams.cluster_code : "",
+                            "scheme": schemeCode,
+                            "uri_path": dataParams.uri_path,
+                            "tx_data": JSON.stringify(dataParams),
+                            "amount": dataParams.txamount,
+                            "baseAmount": (dataParams.baseAmount != null ? dataParams.baseAmount : dataParams.txamount),
+                            "narration": narration,
+                            "remarks": ((dataParams.remarks != null) ? dataParams.remarks :
+                                (dataParams.product, dataParams.subproduct, dataParams)),
+                            "failure_remarks": ((dataParams.failure_remarks != null) ? dataParams.failure_remarks : ""),
+                            "wallet_type": dataParams.wallet_type,
+                            "status": (dataParams.status != null) ? dataParams.status : "pending",
+                            "ref_no": (dataParams.ref_no != null) ? dataParams.ref_no : "",
+                            "tx_ref": (dataParams.tx_ref != null) ? dataParams.tx_ref : "",
+                            "other_info_1": (dataParams.other_info_1 != null) ? dataParams.other_info_1 : "",
+                            "tx_start": (dataParams.tx_start != null) ? dataParams.tx_start : moment().format("Y-M-D HH:mm:ss"),
+                            "tx_end": (dataParams.tx_end != null) ? dataParams.tx_end : "",
+                            "timestamp": (dataParams.timestamp != null) ? dataParams.timestamp : moment().format("Y-M-D HH:mm:ss"),
+                            "user_role": (dataParams.user_role != null) ? dataParams.user_role : "",
+                            "guid_sd": (netwrokData.superdistributor != undefined && netwrokData.superdistributor != null) ? netwrokData.superdistributor.guid : "",
+                            "guid_pt": (netwrokData.partner != undefined && netwrokData.partner != null) ? netwrokData.partner.guid : "",
+                            "guid_dt": (netwrokData.distributor != undefined && netwrokData.distributor != null) ? netwrokData.distributor.guid : "",
+                            "geolocation": dataParams.geolocation,
+                            "clientip": dataParams.clientip,
+                            "created_by": dataParams.userid,
+                            "medium": dataParams.medium,
+                            "site": dataParams.site,
+                            "host": dataParams.host,
+                            sales_id: dataParams.sales_id || "",
+                            sales_col_1: dataParams.sales_col_1 || "",
+                            sales_col_2: dataParams.sales_col_2 || "",
+                            sales_col_3: dataParams.sales_col_3 || "",
+                            sales_col_4: dataParams.sales_col_4 || "",
+                            sales_col_5: dataParams.sales_col_5 || "",
+                            sales_col_6: dataParams.sales_col_6 || "",
+                            sales_col_7: dataParams.sales_col_7 || "",
+                            sales_col_8: dataParams.sales_col_8 || "",
+                            ...parentParams,
+                            plugin_ref: dataParams.plugin_ref,
+                            other_info_5: dataParams.other_info_5
+                        });
+                    });
+                });
+            }
+        });
+    });
+}
